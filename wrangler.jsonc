@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "openecobee-mcp",
+  "main": "cloud/index.ts",
+  "compatibility_date": "2026-10-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "browser": { "binding": "BROWSER" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "THERMOSTAT_SESSIONS", "class_name": "ThermostatSession" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ThermostatSession"] }
+  ],
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_OAUTH_KV_NAMESPACE_ID" }
+  ],
+  "vars": {
+    "ALLOWED_GITHUB_USERS": "eliseorobles",
+    "PUBLIC_ORIGIN": "https://openecobee-mcp.YOUR_SUBDOMAIN.workers.dev"
+  },
+  "observability": { "enabled": false }
+}
