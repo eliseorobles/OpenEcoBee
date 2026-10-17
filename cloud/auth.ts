@@ -45,7 +45,10 @@ export function page(title: string, body: string, headers?: HeadersInit): Respon
   const responseHeaders = new Headers(headers);
   responseHeaders.set("Content-Type", "text/html; charset=utf-8");
   responseHeaders.set("Cache-Control", "no-store");
-  responseHeaders.set("Referrer-Policy", "no-referrer");
+  // Fetch nulls Origin on non-CORS POSTs under no-referrer. Keep same-origin
+  // form submissions compatible with our exact Origin check, while withholding
+  // the referring URL from GitHub and private-browser links on other origins.
+  responseHeaders.set("Referrer-Policy", "same-origin");
   responseHeaders.set("X-Content-Type-Options", "nosniff");
   responseHeaders.set("X-Frame-Options", "DENY");
   responseHeaders.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");

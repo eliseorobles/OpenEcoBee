@@ -120,6 +120,7 @@ describe("hosted app request security", () => {
 
   it.each([
     { origin: "https://attacker.example" },
+    { origin: "null" },
     { origin: "missing" },
     { csrf: "attacker-csrf" },
   ])("rejects app writes without matching origin and CSRF %j", async options => {
@@ -129,7 +130,7 @@ describe("hosted app request security", () => {
     expect(tenantFetch).not.toHaveBeenCalled();
   });
 
-  it.each(["/app/start", "/app/finish", "/app/preferences", "/app/disconnect"])("requires POST for app action %s", async path => {
+  it.each(["/app/start", "/app/finish", "/app/check", "/app/preferences", "/app/disconnect"])("requires POST for app action %s", async path => {
     const { env, ctx, tenantFetch } = setup();
     const response = await worker.fetch(await appRequest(path, { method: "GET" }), env, ctx);
     expect(response.status).toBe(405);
@@ -151,6 +152,62 @@ describe("hosted app request security", () => {
     expect(response.status).toBe(303);
     expect(response.headers.get("Set-Cookie")).toContain("__Host-openecobee=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0");
     expect(tenantFetch).not.toHaveBeenCalled();
+  });
+
+  it("offers a CSRF-protected connection check and explains portal session permissions", async () => {
+    const { env, ctx } = setup();
+    const response = await worker.fetch(new Request(`${origin}/app`, { headers: { Cookie: await sessionCookie() } }), env, ctx);
+    const html = await response.text();
+    expect(html).toContain(`<form method="post" action="/app/check"><input type="hidden" name="csrf" value="${user.csrf}"><button>Check connection</button>`);
+    expect(html).toContain("profile and sign-in management");
+    expect(html.indexOf("profile and sign-in management")).toBeLessThan(html.indexOf('action="/app/start"'));
+  });
+
+  it.each([
+    { origin: "https://attacker.example" },
+    { origin: "missing" },
+    { csrf: "invalid-csrf" },
+  ])("rejects connection checks without origin and CSRF verification %j", async options => {
+    const { env, ctx, tenantFetch } = setup();
+    const response = await worker.fetch(await appRequest("/app/check", options), env, ctx);
+    expect(response.status).toBe(403);
+    expect(tenantFetch).not.toHaveBeenCalled();
+  });
+
+  it("checks the saved tenant session with a read-only list and displays escaped thermostat details", async () => {
+    const { env, ctx, tenantFetch, idFromName } = setup();
+    tenantFetch.mockResolvedValueOnce(Response.json({ ok: true, data: { thermostats: [{
+      id: "PRIVATE-THERMOSTAT-SERIAL", name: "Living <img src=x onerror=alert(1)>", temperatureF: 72.5,
+      humidity: 45, mode: "<cool>", connected: true, ownerEmail: "private-owner@example.com",
+    }] } }));
+    const response = await worker.fetch(await appRequest("/app/check?userId=99999"), env, ctx);
+    expect(response.status).toBe(200);
+    expect(idFromName).toHaveBeenCalledExactlyOnceWith("github:54321");
+    const request = tenantFetch.mock.calls[0][0];
+    expect(new URL(request.url).pathname).toBe("/control");
+    expect(await request.json()).toEqual({ method: "list", args: {}, tokenAllowsWrites: false });
+    const html = await response.text();
+    expect(html).toContain("Thermostat connection verified");
+    expect(html).toContain("Living &#60;img src=x onerror=alert(1)&#62;");
+    expect(html).toContain("72.5 °F");
+    expect(html).toContain("Humidity: 45%");
+    expect(html).toContain("Mode: &#60;cool&#62;");
+    expect(html).toContain("Connection: connected");
+    expect(html).toContain("href='/app'");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("PRIVATE-THERMOSTAT-SERIAL");
+    expect(html).not.toContain("private-owner@example.com");
+  });
+
+  it("shows a reconnect message without internal error details when the saved session fails", async () => {
+    const { env, ctx, tenantFetch } = setup();
+    tenantFetch.mockResolvedValueOnce(Response.json({ ok: false, error: "login_required", message: "private-cookie-and-account-details" }, { status: 409 }));
+    const response = await worker.fetch(await appRequest("/app/check"), env, ctx);
+    const html = await response.text();
+    expect(html).toContain("Connection needs attention");
+    expect(html).toContain("Reconnect ecobee");
+    expect(html).not.toContain("private-cookie-and-account-details");
+    expect(html).not.toContain("Thermostat connection verified");
   });
 });
 

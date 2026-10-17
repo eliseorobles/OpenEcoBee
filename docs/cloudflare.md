@@ -2,7 +2,7 @@
 
 This is the fully hosted path: the operator runs the MCP service and browsers on Cloudflare, and users connect their own ecobee accounts. No local companion remains running for end users.
 
-**Deployment and live compatibility are still unverified.** Start with only your test account allowed. Ecobee may reject Cloudflare-hosted browsers; a successful build or OAuth login does not establish that thermostat control works.
+**Experimental deployment.** The operator's Cloudflare instance has passed GitHub sign-in, ecobee login, restoring the encrypted browser session, and a real thermostat read through ChatGPT's installed custom MCP plugin. Independent deployments still need their own verification. Live temperature and HVAC changes remain untested. Ecobee may reject Cloudflare-hosted browsers; a successful build alone does not establish compatibility.
 
 ## Operator requirements
 
@@ -78,6 +78,7 @@ npx wrangler deploy
 1. Open `https://YOUR_SERVICE/app` and sign in with an allowed GitHub account.
 2. Start ecobee connection. Open the generated private browser live view and complete normal ecobee login and MFA. Treat the link as a credential; [Cloudflare's Live View documentation](https://developers.cloudflare.com/browser-run/features/live-view/) explains its signed access URLs.
 3. Finish connecting and confirm that status can be read. Keep writes disabled initially.
+   Use **Check connection** to verify a fresh hosted browser can restore the saved session and read thermostat data after the sign-in browser closes.
 4. Enable writes for this account and grant `thermostat:write` to the test MCP client. Make a deliberate temporary hold and verify the thermostat or ecobee app reflects it. Test schedule resumption separately.
 5. Disconnect and confirm the account no longer has usable saved ecobee access through the service.
 6. Use a second allowed test identity to verify that users cannot access each other's browser state, thermostat data, or write preferences.

@@ -2,13 +2,17 @@
 
 An open-source MCP server for controlling ecobee thermostats from ChatGPT. The Cloudflare deployment is designed to run entirely in the cloud: people connect their own ecobee account through a browser, without installing a local companion or obtaining an ecobee developer API key.
 
-**Experimental and not yet verified live.** The repository includes the hosted implementation and a local development server. A Cloudflare deployment, ecobee cloud-browser login, and an end-to-end ChatGPT thermostat command still need live verification. Ecobee can block automated/cloud browsers, and portal changes can break this unofficial integration.
+**Experimental.** The Cloudflare deployment, GitHub sign-in, ecobee login, restoring an encrypted session, and a real thermostat read through ChatGPT have been verified. Live temperature and HVAC changes have not been tested. Ecobee can block cloud browsers, and portal changes can break this unofficial integration.
+
+The [operator's hosted pilot](https://openecobee-mcp.eliseo-492.workers.dev) is currently restricted to the operator's GitHub account. Other users can deploy their own instance using the guide below.
 
 ## What “no auth token” means
 
 People do not need an ecobee developer application or manually copied access token. They still sign in to their own ecobee account and complete its normal multifactor authentication. The service saves the resulting browser session so later MCP calls can use it. This is authenticated access, with token handling kept out of the user's setup.
 
 For the hosted service, users sign in with GitHub to identify their OpenEcoBee account and authorize the MCP connection. Ecobee login happens separately in a hosted browser. **The operator hosting OpenEcoBee is trusted with the ecobee session:** saved state is encrypted, but the running service has the key needed to decrypt it. See [security](SECURITY.md).
+
+Ecobee's standard portal sign-in requests thermostat access, profile read/write access, and sign-in grant management. OpenEcoBee exposes only its fixed thermostat tools, but the saved portal session has these broader permissions.
 
 Ecobee [currently does not accept new developer registrations](https://www.ecobee.com/en-us/developers/), so this project uses its signed-in web portal instead of requiring a developer API key.
 

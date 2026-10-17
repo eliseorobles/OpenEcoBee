@@ -1,7 +1,7 @@
 import OAuthProvider, { AuthorizationError, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer, type ThermostatControls } from "../src/tools.js";
-import { UserError } from "../src/types.js";
+import { UserError, type Thermostat } from "../src/types.js";
 import { ThermostatSession, type BrowserEnv } from "./browser.js";
 import { allowedLogin, cookie, cookieValue, escapeHtml, githubIdentity, githubUrl, nonce, page, sign, verify, type Identity } from "./auth.js";
 export { ThermostatSession };
@@ -35,7 +35,7 @@ function hidden(session: Identity) { return `<input type="hidden" name="csrf" va
 async function appPage(env: Env, session: Identity) {
   const response = await internal(env, session.userId, "/status");
   const state = await response.json() as { connected: boolean; allowWrites: boolean };
-  return page("Your ecobee connection", `<p>Signed in as <strong>${escapeHtml(session.login)}</strong>. Ecobee: <strong>${state.connected ? "connected" : "not connected"}</strong>.</p><p>Open the private hosted browser and sign in to ecobee, including MFA. Your login happens inside a Cloudflare browser. This service stores an encrypted browser session and can use it to access your thermostat.</p><form method="post" action="/app/start">${hidden(session)}<button>Open ecobee sign-in</button></form><form method="post" action="/app/finish">${hidden(session)}<button>Finish connecting ecobee</button></form><form method="post" action="/app/preferences">${hidden(session)}<label><input type="checkbox" name="allowWrites" value="yes" ${state.allowWrites ? "checked" : ""}> Allow temperature, HVAC mode, and schedule changes from authorized MCP clients</label><button>Save permissions</button></form><p>MCP URL: <code>${escapeHtml(env.PUBLIC_ORIGIN)}/mcp</code>. Add it to ChatGPT as a custom MCP server with OAuth.</p><form method="post" action="/app/disconnect">${hidden(session)}<button>Disconnect ecobee and delete saved session</button></form><form method="post" action="/app/logout">${hidden(session)}<button>Sign out of OpenEcoBee</button></form><p class="muted">Browser compatibility and real thermostat control are still under verification. If ecobee blocks hosted sign-in, the service cannot connect.</p>`);
+  return page("Your ecobee connection", `<p>Signed in as <strong>${escapeHtml(session.login)}</strong>. Ecobee: <strong>${state.connected ? "connected" : "not connected"}</strong>.</p><p>Open the private hosted browser and sign in to ecobee, including MFA. Your login happens inside a Cloudflare browser. This service stores an encrypted browser session and can use it to access your thermostat.</p><p>The standard ecobee portal session also permits access to your profile and sign-in management. OpenEcoBee uses the session for thermostat controls.</p><form method="post" action="/app/start">${hidden(session)}<button>Open ecobee sign-in</button></form><form method="post" action="/app/finish">${hidden(session)}<button>Finish connecting ecobee</button></form><form method="post" action="/app/check">${hidden(session)}<button>Check connection</button></form><form method="post" action="/app/preferences">${hidden(session)}<label><input type="checkbox" name="allowWrites" value="yes" ${state.allowWrites ? "checked" : ""}> Allow temperature, HVAC mode, and schedule changes from authorized MCP clients</label><button>Save permissions</button></form><p>MCP URL: <code>${escapeHtml(env.PUBLIC_ORIGIN)}/mcp</code>. Add it to ChatGPT as a custom MCP server with OAuth.</p><form method="post" action="/app/disconnect">${hidden(session)}<button>Disconnect ecobee and delete saved session</button></form><form method="post" action="/app/logout">${hidden(session)}<button>Sign out of OpenEcoBee</button></form><p class="muted">Browser compatibility and real thermostat control are still under verification. If ecobee blocks hosted sign-in, the service cannot connect.</p>`);
 }
 
 async function defaultFetch(request: Request, env: Env): Promise<Response> {
@@ -101,6 +101,16 @@ async function defaultFetch(request: Request, env: Env): Promise<Response> {
     const form = await request.formData();
     if (!csrfValid(request, session, form, env)) return new Response("Invalid form session.", { status: 403 });
     if (path === "/app/logout") return redirect("/", { "Set-Cookie": cookie(SESSION_COOKIE, "", 0) });
+    if (path === "/app/check") {
+      const unavailable = () => page("Connection needs attention", "<p>Your ecobee session may have expired or could not be restored. Reconnect ecobee from your connection page, then check again.</p><a href='/app'>Return to connection</a>");
+      try {
+        const response = await internal(env, session.userId, "/control", { method: "list", args: {}, tokenAllowsWrites: false });
+        const result = await response.json() as { ok?: boolean; data?: { thermostats?: Thermostat[] } };
+        if (!response.ok || !result.ok || !Array.isArray(result.data?.thermostats)) return unavailable();
+        const thermostats = result.data.thermostats.map(thermostat => `<section><h2>${escapeHtml(String(thermostat.name))}</h2><p>Current temperature: <strong>${escapeHtml(String(thermostat.temperatureF))} °F</strong><br>Humidity: ${escapeHtml(String(thermostat.humidity))}%<br>Mode: ${escapeHtml(String(thermostat.mode))}<br>Connection: ${thermostat.connected ? "connected" : "offline"}</p></section>`).join("");
+        return page("Thermostat connection verified", `${thermostats || "<p>Ecobee returned no thermostats.</p>"}<p><a href='/app'>Return to connection</a></p>`);
+      } catch { return unavailable(); }
+    }
     if (path === "/app/start") {
       const response = await internal(env, session.userId, "/start", {});
       const result = await response.json() as { liveViewUrl?: string; message?: string };

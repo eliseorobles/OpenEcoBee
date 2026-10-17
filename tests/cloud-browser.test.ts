@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PortalOperation } from "../src/portal.js";
 import type { Thermostat } from "../src/types.js";
 
@@ -71,6 +71,107 @@ describe("hosted thermostat tenant object", () => {
     };
     mockBrowser.connect.mockResolvedValue({ newContext: async () => context, close: async () => undefined });
   });
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function startAtHomepage(links: string[]) {
+    const { instance, binding } = await tenant("tenant-a", false);
+    const page = {
+      goto: vi.fn(async () => undefined),
+      url: () => "https://www.ecobee.com/en-us/",
+      locator: () => ({ evaluateAll: async (read: (anchors: { getAttribute: (name: string) => string }[]) => unknown) =>
+        read(links.map(href => ({ getAttribute: () => href }))) }),
+    };
+    mockBrowser.endpointURLString.mockReturnValue("http://fake.host/v1/devtools/browser/private-session?browser_binding=BROWSER");
+    mockBrowser.connect.mockResolvedValue({
+      contexts: () => [{ pages: () => [page], newCDPSession: async () => ({ send: async () => ({ targetInfo: { targetId: "tenant-page" } }) }) }],
+      close: async () => undefined,
+    });
+    const getLiveView = vi.fn(async () => ({ devtoolsFrontendUrl: "https://live.browser.run/ui/view?jwt=private-access" }));
+    Object.assign(binding, { getLiveView });
+    return { result: await post(instance, "/start"), page, getLiveView };
+  }
+
+  const officialSignIn = "https://auth.ecobee.com/authorize?response_type=token&response_mode=form_post&client_id=discovered-public-client&redirect_uri=https%3A%2F%2Fwww.ecobee.com%2Fhome%2FauthCallback&audience=https%3A%2F%2Fprod.ecobee.com%2Fapi%2Fv1&scope=openid%20smartWrite%20piiWrite%20piiRead%20smartRead%20deleteGrants";
+
+  it("opens the discovered official login on the existing Live View page without changing scopes", async () => {
+    const { result, page, getLiveView } = await startAtHomepage([officialSignIn]);
+    expect(result.status).toBe(200);
+    expect(page.goto).toHaveBeenCalledTimes(2);
+    expect(page.goto.mock.calls[1][0]).toBe(officialSignIn);
+    expect(getLiveView).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["missing official link", []],
+    ["another authorization host", [officialSignIn.replace("auth.ecobee.com", "auth.ecobee.com.example.org")]],
+    ["another callback", [officialSignIn.replace("www.ecobee.com%2Fhome%2FauthCallback", "example.org%2Fcallback")]],
+    ["another audience", [officialSignIn.replace("prod.ecobee.com%2Fapi%2Fv1", "example.org%2Fapi")]],
+    ["new unapproved permission", [`${officialSignIn}%20newPermission`]],
+    ["duplicate callback", [`${officialSignIn}&redirect_uri=https%3A%2F%2Fexample.org%2Fcallback`]],
+  ])("fails safely with %s", async (_description, links) => {
+    const { result, page, getLiveView } = await startAtHomepage(links as string[]);
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({ error: "site_changed" });
+    expect(page.goto).toHaveBeenCalledOnce();
+    expect(getLiveView).not.toHaveBeenCalled();
+  });
+
+  it("waits for the portal injector and hydrated token rather than Angular alone", async () => {
+    const { instance } = await tenant("tenant-a");
+    let injectorReady = false;
+    let hasToken = false;
+    const manager = { loadTokens: vi.fn(() => { hasToken = true; }), haveToken: () => hasToken };
+    const element = {};
+    vi.stubGlobal("location", { protocol: "https:", hostname: "www.ecobee.com", pathname: "/consumerportal/index.html" });
+    vi.stubGlobal("document", { querySelector: () => element, body: element, documentElement: element });
+    vi.stubGlobal("window", { angular: { element: () => ({ injector: () => {
+      if (!injectorReady) return undefined;
+      return { get: () => manager };
+    } }) } });
+    const evaluate = vi.fn(async () => ({ ok: true, thermostats: [current] }));
+    const waitForFunction = vi.fn(async (ready: () => boolean, _arg: unknown, options: { timeout: number }) => {
+      expect(options.timeout).toBe(15_000);
+      expect(ready()).toBe(false);
+      expect(evaluate).not.toHaveBeenCalled();
+      injectorReady = true;
+      expect(ready()).toBe(true);
+    });
+    mockBrowser.connect.mockResolvedValue({
+      newContext: async () => ({
+        newPage: async () => ({ goto: async () => undefined, waitForFunction, evaluate }),
+        storageState: async () => ({ cookies: [], origins: [] }),
+      }),
+      close: async () => undefined,
+    });
+    const result = await post(instance, "/control", { method: "list", args: {}, tokenAllowsWrites: false });
+    expect(result.status).toBe(200);
+    expect(manager.loadTokens).toHaveBeenCalled();
+    expect(evaluate).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["https://www.ecobee.com/consumerportal/index.html", "site_changed", true],
+    ["https://auth.ecobee.com/u/login/identifier", "login_required", false],
+  ] as const)("classifies readiness timeout at %s without misidentifying slow bootstrap", async (url, errorCode, keepSaved) => {
+    const { instance, storage } = await tenant("tenant-a");
+    const timeout = new Error("Portal wait timed out");
+    timeout.name = "TimeoutError";
+    const evaluate = vi.fn();
+    mockBrowser.connect.mockResolvedValue({
+      newContext: async () => ({ newPage: async () => ({
+        goto: async () => undefined,
+        url: () => url,
+        waitForFunction: async () => { throw timeout; },
+        evaluate,
+      }) }),
+      close: async () => undefined,
+    });
+    const result = await post(instance, "/control", { method: "list", args: {}, tokenAllowsWrites: false });
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({ error: errorCode });
+    expect(storage.values.has("saved")).toBe(keepSaved);
+    expect(evaluate).not.toHaveBeenCalled();
+  });
 
   it("requires both account permission and the MCP token's write permission", async () => {
     const { instance } = await tenant("tenant-a");
@@ -139,6 +240,7 @@ describe("hosted thermostat tenant object", () => {
     const page = {
       goto: vi.fn(async () => undefined),
       url: () => "https://www.ecobee.com/consumerportal/index.html",
+      waitForFunction: vi.fn(async () => undefined),
       evaluate: vi.fn(async () => ({ ok: true, thermostats: [current] })),
     };
     const context = {

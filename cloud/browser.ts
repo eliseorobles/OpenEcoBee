@@ -169,6 +169,7 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
       if (!context) throw new Error("Persistent browser context missing.");
       const page = context.pages()[0] ?? await context.newPage();
       await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await this.openHomepageSignIn(page);
       const cdp = await context.newCDPSession(page);
       const { targetInfo } = await cdp.send("Target.getTargetInfo");
       const view = await this.env.BROWSER.getLiveView(sessionId, {
@@ -186,6 +187,39 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
     }
   }
 
+  private async openHomepageSignIn(page: Page): Promise<void> {
+    const current = new URL(page.url());
+    if (current.protocol !== "https:" || !["www.ecobee.com", "ecobee.com"].includes(current.hostname) ||
+        current.pathname.startsWith("/consumerportal/")) return;
+    // The unauthenticated portal can redirect to the public homepage. Its login
+    // link opens a new tab, which a single-target Live View cannot follow.
+    // Discover the official link and navigate this same page instead.
+    const links = await page.locator('a[href^="https://auth.ecobee.com/authorize"]').evaluateAll(anchors =>
+      anchors.slice(0, 20).map(anchor => anchor.getAttribute("href")));
+    const approvedScopes = new Set(["openid", "smartRead", "smartWrite", "piiRead", "piiWrite", "deleteGrants"]);
+    for (const href of links) {
+      if (!href) continue;
+      let destination: URL;
+      try { destination = new URL(href); } catch { continue; }
+      const parameters = destination.searchParams;
+      const scope = parameters.get("scope")?.split(/\s+/).filter(Boolean) ?? [];
+      if (destination.protocol !== "https:" || destination.hostname !== "auth.ecobee.com" ||
+          destination.port || destination.username || destination.password || destination.hash ||
+          destination.pathname !== "/authorize" ||
+          parameters.getAll("redirect_uri").length !== 1 || parameters.get("redirect_uri") !== "https://www.ecobee.com/home/authCallback" ||
+          parameters.getAll("audience").length !== 1 || parameters.get("audience") !== "https://prod.ecobee.com/api/v1" ||
+          parameters.getAll("client_id").length !== 1 || !/^[A-Za-z0-9_-]{1,256}$/.test(parameters.get("client_id") ?? "") ||
+          parameters.get("response_type") !== "token" || parameters.get("response_mode") !== "form_post" ||
+          parameters.getAll("scope").length !== 1 || !scope.includes("openid") ||
+          !scope.includes("smartRead") || !scope.includes("smartWrite") || scope.some(value => !approvedScopes.has(value))) continue;
+      // Preserve the discovered request's scopes. Never add permissions, supply
+      // a guessed client id, or silently follow new permissions after a site change.
+      await page.goto(destination.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      return;
+    }
+    throw new PortalError("site_changed");
+  }
+
   private async finishLogin(): Promise<Response> {
     const login = await this.ctx.storage.get<LoginSession>("login");
     if (!login || login.expiresAt <= Date.now()) {
@@ -197,6 +231,7 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
       const context = browser.contexts()[0];
       const page = context?.pages().find(page => page.url().startsWith("https://www.ecobee.com/consumerportal/") || page.url().startsWith("https://ecobee.com/consumerportal/"));
       if (!page) throw new PortalError("login_required");
+      await this.waitForPortalReady(page);
       await this.portal(page, { type: "list" });
       await this.saveState(context);
       // Closing the whole browser also invalidates every issued Live View URL.
@@ -213,6 +248,41 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
       state: await encryptSession(this.env.SESSION_ENCRYPTION_KEY, storageState, this.ctx.id.toString()),
       verifiedAt: new Date().toISOString(),
     });
+  }
+
+  private async waitForPortalReady(page: Page): Promise<void> {
+    try {
+      await page.waitForFunction(() => {
+        if (location.protocol !== "https:" || !["www.ecobee.com", "ecobee.com"].includes(location.hostname) ||
+            !location.pathname.startsWith("/consumerportal/")) return false;
+        const angular = (window as Window & {
+          angular?: { element(element: Element | Document): { injector(): { get(name: string): unknown } | undefined } };
+        }).angular;
+        if (!angular) return false;
+        for (const element of [document.querySelector("[ng-app]"), document.body, document.documentElement, document]) {
+          if (!element) continue;
+          try {
+            const manager = angular.element(element).injector()?.get("connectionManagerAPI") as {
+              loadTokens?: () => void; haveToken?: () => boolean;
+            } | undefined;
+            if (typeof manager?.loadTokens !== "function" || typeof manager.haveToken !== "function") continue;
+            manager.loadTokens();
+            if (manager.haveToken()) return true;
+          } catch { /* Angular can exist before its injector and services finish bootstrapping. */ }
+        }
+        return false;
+      }, undefined, { timeout: 15_000 });
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+      // A known login redirect proves authentication is needed. A slow portal
+      // bootstrap alone does not prove the saved login has expired.
+      const current = new URL(page.url());
+      if (current.protocol === "https:" && current.hostname === "auth.ecobee.com") {
+        await this.ctx.storage.delete("saved");
+        throw new PortalError("login_required");
+      }
+      throw new PortalError("site_changed");
+    }
   }
 
   private async portal(page: Page, operation: PortalOperation) {
@@ -244,7 +314,7 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
       const context = await browser.newContext({ storageState });
       const page = await context.newPage();
       await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      await page.waitForFunction(() => Boolean((window as Window & { angular?: unknown }).angular), undefined, { timeout: 15_000 }).catch(() => undefined);
+      await this.waitForPortalReady(page);
       const backend: ThermostatBackend = {
         kind: "browser",
         listThermostats: async () => {

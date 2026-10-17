@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { allowedLogin, cookie, cookieValue, githubIdentity, githubUrl, nonce, sign, verify, type Identity } from "../cloud/auth.js";
+import { allowedLogin, cookie, cookieValue, githubIdentity, githubUrl, nonce, page, sign, verify, type Identity } from "../cloud/auth.js";
 
 const secret = "test-cookie-secret-at-least-32-characters";
 const githubEnv = { GITHUB_CLIENT_ID: "test-client", GITHUB_CLIENT_SECRET: "test-client-secret", PUBLIC_ORIGIN: "https://thermostat.example" };
@@ -10,6 +10,13 @@ afterEach(() => {
 });
 
 describe("signed hosted session", () => {
+  it("keeps same-origin form Origin headers without disclosing referrers to other origins", () => {
+    const response = page("Connection", '<form method="post" action="/app/start"></form>');
+    expect(response.headers.get("Referrer-Policy")).toBe("same-origin");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+  });
+
   it("roundtrips a session and rejects changes to its body or signature", async () => {
     const identity: Identity = { userId: "12345", login: "home-owner", csrf: "private-csrf", exp: Date.now() + 60_000 };
     const signed = await sign(identity, secret);

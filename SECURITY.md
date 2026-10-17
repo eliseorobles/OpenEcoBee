@@ -8,6 +8,8 @@ GitHub sign-in identifies the OpenEcoBee account. Normal ecobee login and MFA ha
 
 **Use an operator you trust.** The service holds the key needed to decrypt session state. An operator or attacker controlling the Worker, its secrets, or a live browser can use those ecobee sessions. Saved-state encryption limits exposure of stored data; it does not prevent the running service from reading it.
 
+The standard ecobee portal sign-in also requests profile read/write and sign-in grant-management permissions. These are broader than the fixed thermostat tools exposed by this MCP. Encrypting the saved session does not reduce the underlying ecobee permissions.
+
 Keep the initial user allowlist closed while testing. Verify that OAuth authorization, per-user browser state, write preferences, and disconnect actions are isolated between accounts before opening registration. A public deployment should have an operator contact and a clear privacy/data-retention policy.
 
 Browser live-view links grant sensitive access to an active session. Keep them private, do not paste them into chat or issues, and finish or disconnect the session after setup. Never collect passwords, MFA codes, cookies, session tokens, or browser storage through MCP tools.
