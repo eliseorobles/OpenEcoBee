@@ -38,7 +38,7 @@ MCP exposes fixed thermostat operations, with no browser scripting, arbitrary HT
 
 - Reads are available to the connected account.
 - Changes require writes to be enabled.
-- Temperature holds accept explicit Fahrenheit or Celsius units and an explicit duration: 1–24 hours, until the next scheduled change, or until changed.
+- Temperature holds accept explicit Fahrenheit or Celsius units and an explicit duration: 1–24 hours, until the next scheduled change, until changed, or an explicit thermostat-local end date/time.
 - Setpoints must fit the thermostat's reported limits. Minimum heat/cool separation is enforced in Auto mode; Cool and Heat preserve the inactive setpoint.
 - Mode changes use a restricted enum.
 - `resume_schedule` sends a request to end a hold.

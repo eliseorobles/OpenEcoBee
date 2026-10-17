@@ -2,7 +2,7 @@
 
 An open-source MCP server for controlling ecobee thermostats from ChatGPT. The Cloudflare deployment is designed to run entirely in the cloud: people connect their own ecobee account through a browser, without installing a local companion or obtaining an ecobee developer API key.
 
-**Experimental.** The Cloudflare deployment, GitHub sign-in, ecobee login, restoring and renewing an encrypted session, a thermostat read through ChatGPT, and a real indefinite cooling hold have been verified. HVAC mode changes have not been independently verified live. Ecobee can block cloud browsers, and portal changes can break this unofficial integration.
+**Experimental.** The Cloudflare deployment, GitHub sign-in, ecobee login, restoring and renewing an encrypted session, a thermostat read through ChatGPT, and a real indefinite cooling hold have been verified. Broader controls have implementation tests; live verification is recorded in the [coverage document](docs/feature-coverage.md). Ecobee can block cloud browsers, and portal changes can break this unofficial integration.
 
 The [operator's hosted pilot](https://openecobee-mcp.eliseo-492.workers.dev) is currently restricted to the operator's GitHub account. Other users can deploy their own instance using the guide below.
 
