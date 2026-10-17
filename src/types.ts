@@ -18,11 +18,13 @@ export interface Thermostat {
   equipment: string;
 }
 
-export interface TemperatureHold {
+export type TemperatureHold = {
   heatF: number;
   coolF: number;
-  hours: number;
-}
+} & (
+  | { holdType?: "hours"; hours: number }
+  | { holdType: "indefinite" | "next_transition"; hours?: never }
+);
 
 export interface ThermostatBackend {
   readonly kind: "browser" | "demo";

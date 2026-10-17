@@ -1,7 +1,7 @@
 import { chmod, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import { PORTAL_URL, runPortalOperation, type PortalErrorCode, type PortalOperation, type PortalResult } from "./portal.js";
+import { PORTAL_URL, portalDiagnosticSuffix, runPortalOperation, type PortalErrorCode, type PortalOperation, type PortalResult } from "./portal.js";
 import { UserError, type HvacMode, type TemperatureHold, type Thermostat, type ThermostatBackend } from "./types.js";
 
 const MESSAGES: Record<PortalErrorCode, string> = {
@@ -13,7 +13,7 @@ const MESSAGES: Record<PortalErrorCode, string> = {
   write_uncertain: "The thermostat change could not be confirmed. It may have applied. Check its current state before sending another change; this request was not retried.",
   thermostat_missing: "That thermostat is not available in the signed-in Ecobee account.",
   offline: "The thermostat is offline. Reconnect it before sending a change.",
-  invalid_input: "The thermostat request was invalid. Temperature holds must last from 1 to 24 whole hours.",
+  invalid_input: "The thermostat request was invalid. Choose 1–24 hours, until the next scheduled change, or until changed.",
   temperature_range: "Those temperatures exceed the thermostat's configured limits or minimum heat/cool separation.",
   demand_response: "An active demand response event is controlling this thermostat. Review it in the Ecobee portal before changing its settings.",
 };
@@ -110,7 +110,7 @@ export class BrowserBackend implements ThermostatBackend {
     catch (error) { await this.closeContext(); throw error; }
     if (!result.ok) {
       if (["timeout", "write_uncertain", "login_required"].includes(result.error)) await this.closeContext();
-      throw new UserError(MESSAGES[result.error]);
+      throw new UserError(MESSAGES[result.error] + portalDiagnosticSuffix(result.diagnostics));
     }
     return result;
   }

@@ -35,7 +35,8 @@ describe("MCP protocol", () => {
       expect(tool.inputSchema.additionalProperties).toBe(false);
     }
     const temperature = tools.find(tool => tool.name === "set_temperature")!;
-    expect(temperature.inputSchema.required).toEqual(expect.arrayContaining(["thermostat_id", "unit", "hours"]));
+    expect(temperature.inputSchema.required).toEqual(expect.arrayContaining(["thermostat_id", "unit"]));
+    expect(temperature.inputSchema.required).not.toContain("hours");
     expect(temperature.inputSchema.properties?.hours).toMatchObject({ type: "integer", minimum: 1, maximum: 24 });
     expect(temperature.inputSchema.properties?.unit).toMatchObject({ enum: ["F", "C"] });
   });
@@ -92,6 +93,15 @@ describe("MCP protocol", () => {
     const result = await client.callTool({ name: "get_thermostat_status", arguments: { thermostat_id: "missing" } });
     expect(result.isError).toBe(true);
     expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("Thermostat not found") })]));
+  });
+
+  it("accepts an explicit indefinite cooling hold without inventing hours", async () => {
+    const { client } = await connect(true);
+    await client.callTool({ name: "set_hvac_mode", arguments: { thermostat_id: thermostatId, mode: "cool" } });
+    const result = await client.callTool({ name: "set_temperature", arguments: { thermostat_id: thermostatId, cool: 65, unit: "F", hold_type: "indefinite" } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ requested: { coolF: 65, hold_type: "indefinite", hold_description: "until changed" }, thermostat: { mode: "cool", heatF: 68, coolF: 65 } });
+    expect((result.structuredContent as { requested: Record<string, unknown> }).requested).not.toHaveProperty("hours");
   });
 });
 

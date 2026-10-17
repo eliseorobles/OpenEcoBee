@@ -56,7 +56,8 @@ describe("hosted thermostat tenant object", () => {
       newPage: async () => ({
         goto: async () => undefined,
         waitForFunction: async () => undefined,
-        evaluate: async (_fn: unknown, operation: PortalOperation) => {
+        evaluate: async (_fn: unknown, operation?: PortalOperation) => {
+          if (!operation) return false;
           operations.push(operation);
           if (operation.type === "list") return { ok: true, thermostats: [{ ...current }] };
           if (operation.type === "setTemperature") {
@@ -93,6 +94,67 @@ describe("hosted thermostat tenant object", () => {
 
   const officialSignIn = "https://auth.ecobee.com/authorize?response_type=token&response_mode=form_post&client_id=discovered-public-client&redirect_uri=https%3A%2F%2Fwww.ecobee.com%2Fhome%2FauthCallback&audience=https%3A%2F%2Fprod.ecobee.com%2Fapi%2Fv1&scope=openid%20smartWrite%20piiWrite%20piiRead%20smartRead%20deleteGrants";
 
+  const jwt = (exp: unknown) => `e30.${btoa(JSON.stringify({ exp, private: "PRIVATE" })).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_")}.signature`;
+
+  it.each([
+    ["expired Redux", -60, 60, true],
+    ["fresh Redux overrides old cookie", 60, -60, false],
+    ["cookie fallback", undefined, -60, true],
+    ["unknown expiry", undefined, undefined, false],
+  ] as const)("returns only an expiry boolean for %s", async (_label, reduxAge, cookieAge, expected) => {
+    const { instance } = await tenant("tenant-a");
+    const now = Math.floor(Date.now() / 1000);
+    vi.stubGlobal("window", { ecobeeStore: { getState: () => ({ tokens: { token: reduxAge === undefined ? "opaque" : jwt(now + reduxAge) } }) } });
+    vi.stubGlobal("document", { cookie: cookieAge === undefined ? "" : `_TOKEN=${jwt(now + cookieAge)}` });
+    const probe = instance as unknown as { expiredPortalToken(page: unknown): Promise<boolean> };
+    const result = await probe.expiredPortalToken({ evaluate: async (fn: () => boolean) => fn() });
+    expect(result).toBe(expected);
+    expect(typeof result).toBe("boolean");
+  });
+
+  it.each([true, false])("renews an expired session once before any write (SSO succeeds: %s)", async success => {
+    const { instance, storage } = await tenant("tenant-a");
+    await post(instance, "/preferences", { allowWrites: true });
+    const now = Math.floor(Date.now() / 1000);
+    let token = jwt(now - 60);
+    let url = "https://www.ecobee.com/consumerportal/index.html";
+    const events: string[] = [];
+    vi.stubGlobal("window", { ecobeeStore: { getState: () => ({ tokens: { token } }) } });
+    vi.stubGlobal("document", { get cookie() { return `_TOKEN=${token}`; } });
+    const page = {
+      url: () => url,
+      goto: vi.fn(async (destination: string) => {
+        url = destination;
+        if (destination === officialSignIn) {
+          events.push("renew");
+          if (success) token = jwt(now + 3600);
+          url = "https://www.ecobee.com/consumerportal/index.html";
+        }
+      }),
+      locator: () => ({ evaluateAll: async (read: (anchors: { getAttribute: () => string }[]) => unknown) => read([{ getAttribute: () => officialSignIn }]) }),
+      waitForFunction: async () => undefined,
+      evaluate: async (fn: () => boolean, operation?: PortalOperation) => {
+        if (!operation) return fn();
+        events.push(operation.type);
+        if (operation.type === "list") return { ok: true, thermostats: [{ ...current }] };
+        expect(events.indexOf("save")).toBeLessThan(events.indexOf(operation.type));
+        if (operation.type === "setMode") current.mode = operation.mode;
+        return { ok: true };
+      },
+    };
+    const newContext = vi.fn(async () => ({
+      newPage: async () => page,
+      storageState: async () => { events.push("save"); return { cookies: [{ name: "_TOKEN", value: token }], origins: [] }; },
+    }));
+    mockBrowser.connect.mockResolvedValue({ newContext, close: async () => undefined });
+    const result = await post(instance, "/control", { method: "setMode", args: { thermostat_id: current.id, mode: "cool" }, tokenAllowsWrites: true });
+    expect(result.status).toBe(success ? 200 : 409);
+    expect(events.filter(value => value === "renew")).toHaveLength(1);
+    expect(events.filter(value => value === "setMode")).toHaveLength(success ? 1 : 0);
+    expect(newContext).toHaveBeenCalledOnce();
+    expect(storage.values.has("saved")).toBe(success);
+  });
+
   it("opens the discovered official login on the existing Live View page without changing scopes", async () => {
     const { result, page, getLiveView } = await startAtHomepage([officialSignIn]);
     expect(result.status).toBe(200);
@@ -128,7 +190,7 @@ describe("hosted thermostat tenant object", () => {
       if (!injectorReady) return undefined;
       return { get: () => manager };
     } }) } });
-    const evaluate = vi.fn(async () => ({ ok: true, thermostats: [current] }));
+    const evaluate = vi.fn(async (_fn: unknown, operation?: PortalOperation) => operation ? ({ ok: true, thermostats: [current] }) : false);
     const waitForFunction = vi.fn(async (ready: () => boolean, _arg: unknown, options: { timeout: number }) => {
       expect(options.timeout).toBe(15_000);
       expect(ready()).toBe(false);
@@ -146,7 +208,7 @@ describe("hosted thermostat tenant object", () => {
     const result = await post(instance, "/control", { method: "list", args: {}, tokenAllowsWrites: false });
     expect(result.status).toBe(200);
     expect(manager.loadTokens).toHaveBeenCalled();
-    expect(evaluate).toHaveBeenCalledOnce();
+    expect(evaluate).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -210,7 +272,8 @@ describe("hosted thermostat tenant object", () => {
   it("reports an uncertain write if the browser disconnects during its response", async () => {
     const { instance } = await tenant("tenant-a");
     await post(instance, "/preferences", { allowWrites: true });
-    const evaluate = vi.fn(async (_fn: unknown, operation: PortalOperation) => {
+    const evaluate = vi.fn(async (_fn: unknown, operation?: PortalOperation) => {
+      if (!operation) return false;
       if (operation.type === "list") return { ok: true, thermostats: [current] };
       throw new Error("Private browser URL must not appear in the response");
     });
@@ -221,7 +284,7 @@ describe("hosted thermostat tenant object", () => {
     const result = await post(instance, "/control", { method: "setMode", args: { thermostat_id: current.id, mode: "cool" }, tokenAllowsWrites: true });
     expect(result.status).toBe(409);
     expect(await result.json()).toMatchObject({ error: "write_uncertain" });
-    expect(evaluate).toHaveBeenCalledTimes(2);
+    expect(evaluate).toHaveBeenCalledTimes(3);
   });
 
   it("removes the login and account write permission on disconnect", async () => {

@@ -24,7 +24,28 @@ export type PortalErrorCode =
 export type PortalResult =
   | { ok: true; thermostats: Thermostat[] }
   | { ok: true }
-  | { ok: false; error: PortalErrorCode };
+  | { ok: false; error: PortalErrorCode; diagnostics?: PortalDiagnostics };
+
+export interface PortalDiagnostics {
+  phase: "read" | "write";
+  apiCode?: number;
+  httpStatus?: number;
+}
+
+/** Render only the fixed diagnostic vocabulary and bounded integer codes. */
+export function portalDiagnosticSuffix(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const detail = value as Record<string, unknown>;
+  if (detail.phase !== "read" && detail.phase !== "write") return "";
+  const parts: string[] = [detail.phase];
+  if (typeof detail.apiCode === "number" && Number.isInteger(detail.apiCode) && detail.apiCode >= 0 && detail.apiCode <= 9999) {
+    parts.push(`ecobee API code ${detail.apiCode}`);
+  }
+  if (typeof detail.httpStatus === "number" && Number.isInteger(detail.httpStatus) && detail.httpStatus >= 100 && detail.httpStatus <= 599) {
+    parts.push(`HTTP ${detail.httpStatus}`);
+  }
+  return ` (${parts.join("; ")})`;
+}
 
 /**
  * Runs entirely inside the signed-in Ecobee page. It must have no runtime imports
@@ -51,7 +72,8 @@ export async function runPortalOperation(operation: PortalOperation): Promise<Po
   type AngularWindow = Window & {
     angular?: { element(element: Element | Document): { injector(): { get(name: string): unknown } | undefined } };
   };
-  const fail = (error: PortalErrorCode): PortalResult => ({ ok: false, error });
+  const fail = (error: PortalErrorCode, diagnostics?: PortalDiagnostics): PortalResult =>
+    diagnostics ? { ok: false, error, diagnostics } : { ok: false, error };
   const record = (value: unknown): RecordValue | undefined =>
     value !== null && typeof value === "object" && !Array.isArray(value)
       ? value as RecordValue : undefined;
@@ -68,6 +90,16 @@ export async function runPortalOperation(operation: PortalOperation): Promise<Po
       nested?.error === "invalid_token" || nested?.error === "invalid_grant";
   };
   let writeStarted = false;
+  const diagnose = (value: unknown): PortalDiagnostics => {
+    const data = record(value);
+    const nested = record(data?.data);
+    const response = record(data?.response);
+    const apiCode = [record(data?.status)?.code, record(nested?.status)?.code].find(code =>
+      typeof code === "number" && Number.isInteger(code) && code >= 0 && code <= 9999) as number | undefined;
+    const httpStatus = [data?.status, response?.status, nested?.status].find(code =>
+      typeof code === "number" && Number.isInteger(code) && code >= 100 && code <= 599) as number | undefined;
+    return { phase: writeStarted ? "write" : "read", ...(apiCode === undefined ? {} : { apiCode }), ...(httpStatus === undefined ? {} : { httpStatus }) };
+  };
   const call = async (start: () => PromiseLike<unknown>): Promise<unknown> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -126,9 +158,9 @@ export async function runPortalOperation(operation: PortalOperation): Promise<Po
       includeEquipmentStatus: true,
     } }));
     const status = responseStatus(response);
-    if (status === "auth") return fail("login_required");
-    if (status === "failed") return fail("request_failed");
-    if (status !== "ok") return fail("invalid_response");
+    if (status === "auth") return fail("login_required", diagnose(response));
+    if (status === "failed") return fail("request_failed", diagnose(response));
+    if (status !== "ok") return fail("invalid_response", diagnose(response));
     const values = record(response)?.thermostatList;
     if (!Array.isArray(values) || values.length > 200) return fail("invalid_response");
     const thermostats: Thermostat[] = [];
@@ -184,20 +216,23 @@ export async function runPortalOperation(operation: PortalOperation): Promise<Po
     switch (operation.type) {
       case "setTemperature": {
         const hold = operation.hold;
-        if (!hold || !finite(hold.heatF, -40, 220) || !finite(hold.coolF, -40, 220) ||
-            !Number.isInteger(hold.hours) || hold.hours < 1 || hold.hours > 24) return fail("invalid_input");
+        if (!hold || !finite(hold.heatF, -40, 220) || !finite(hold.coolF, -40, 220)) return fail("invalid_input");
+        const duration = hold.holdType === undefined ? "hours" : hold.holdType;
+        if (!["hours", "indefinite", "next_transition"].includes(duration) ||
+            (duration === "hours" && (typeof hold.hours !== "number" || !Number.isInteger(hold.hours) || hold.hours < 1 || hold.hours > 24)) ||
+            (duration !== "hours" && hold.hours !== undefined)) return fail("invalid_input");
         const heat = Math.round(hold.heatF * 10);
         const cool = Math.round(hold.coolF * 10);
         if (heat < target.heatMinF * 10 || heat > target.heatMaxF * 10 ||
             cool < target.coolMinF * 10 || cool > target.coolMaxF * 10 ||
-            cool - heat < Math.round(target.minDeltaF * 10)) return fail("temperature_range");
+            (target.mode === "auto" && cool - heat < Math.round(target.minDeltaF * 10))) return fail("temperature_range");
         // Use exactly one existing API action. The UISetHold alternative can
         // wait on portal dialogs and is unsuitable for an unattended MCP call.
         write = () => manager.connectToReduxConnectionManager("setHold", [[operation.id], {
           coolHoldTemp: cool,
           heatHoldTemp: heat,
-          holdType: "holdHours",
-          holdHours: hold.hours,
+          holdType: duration === "hours" ? "holdHours" : duration === "next_transition" ? "nextTransition" : "indefinite",
+          ...(duration === "hours" ? { holdHours: hold.hours } : {}),
           isTemperatureAbsolute: true,
           isTemperatureRelative: false,
         }]);
@@ -214,13 +249,13 @@ export async function runPortalOperation(operation: PortalOperation): Promise<Po
     writeStarted = true;
     const written = await call(write);
     const writtenStatus = responseStatus(written);
-    if (writtenStatus === "auth") return fail("login_required");
-    if (writtenStatus === "failed") return fail("request_failed");
-    if (writtenStatus !== "ok") return fail("write_uncertain");
+    if (writtenStatus === "auth") return fail("login_required", diagnose(written));
+    if (writtenStatus === "failed") return fail("request_failed", diagnose(written));
+    if (writtenStatus !== "ok") return fail("write_uncertain", diagnose(written));
     return { ok: true };
   } catch (error: unknown) {
-    if (authFailure(error)) return fail("login_required");
-    if (writeStarted) return fail("write_uncertain");
-    return fail(error === "portal_timeout" ? "timeout" : "request_failed");
+    if (authFailure(error)) return fail("login_required", diagnose(error));
+    if (writeStarted) return fail("write_uncertain", diagnose(error));
+    return fail(error === "portal_timeout" ? "timeout" : "request_failed", diagnose(error));
   }
 }

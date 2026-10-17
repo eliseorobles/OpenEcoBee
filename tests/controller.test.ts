@@ -33,14 +33,76 @@ describe("Controller", () => {
     const write = vi.spyOn(backend, "setTemperature");
     const result = await controller.setTemperature({ thermostat_id: thermostatId, heat: 19, cool: 24, unit: "C", hours: 3 });
 
-    expect(write).toHaveBeenCalledWith(thermostatId, { heatF: 66.2, coolF: 75.2, hours: 3 });
+    expect(write).toHaveBeenCalledWith(thermostatId, { heatF: 66.2, coolF: 75.2, holdType: "hours", hours: 3 });
     expect(result).toMatchObject({ simulated: true, delivery: "accepted", verification: "observed", thermostat: { heatF: 66.2, coolF: 75.2 } });
   });
 
   it("keeps the omitted setpoint", async () => {
     const { controller } = setup();
     const result = await controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hours: 1 });
-    expect(result.requested).toEqual({ heatF: 68, coolF: 77, hours: 1 });
+    expect(result.requested).toEqual({ heatF: 68, coolF: 77, hold_type: "hours", hold_description: "for 1 hour", hours: 1 });
+  });
+
+  it.each([
+    ["indefinite", "until changed"],
+    ["next_transition", "until the next scheduled change"],
+  ] as const)("sends a %s hold without inventing an hourly duration", async (holdType, description) => {
+    const { backend, controller } = setup();
+    const write = vi.spyOn(backend, "setTemperature");
+    const result = await controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type: holdType });
+    expect(write).toHaveBeenCalledExactlyOnceWith(thermostatId, { heatF: 68, coolF: 77, holdType });
+    expect(result.requested).toEqual({ heatF: 68, coolF: 77, hold_type: holdType, hold_description: description });
+    expect(result.requested).not.toHaveProperty("hours");
+    expect(result.verification).toBe("observed");
+  });
+
+  it("normalizes an explicit timed hold", async () => {
+    const { backend, controller } = setup();
+    const write = vi.spyOn(backend, "setTemperature");
+    const result = await controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type: "hours", hours: 4 });
+    expect(write).toHaveBeenCalledExactlyOnceWith(thermostatId, { heatF: 68, coolF: 77, holdType: "hours", hours: 4 });
+    expect(result.requested).toMatchObject({ hold_type: "hours", hold_description: "for 4 hours", hours: 4 });
+  });
+
+  it.each([undefined, "hours"] as const)("requires an hourly duration for hold type %s", async hold_type => {
+    const { backend, controller } = setup();
+    const write = vi.spyOn(backend, "setTemperature");
+    await expect(controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type })).rejects.toThrow("whole number of hours from 1 to 24");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it.each(["indefinite", "next_transition"] as const)("rejects a contradictory duration on a %s hold", async hold_type => {
+    const { backend, controller } = setup();
+    const write = vi.spyOn(backend, "setTemperature");
+    await expect(controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type, hours: 24 })).rejects.toThrow("Hours must be omitted");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unsupported hold type without a write", async () => {
+    const { backend, controller } = setup();
+    const write = vi.spyOn(backend, "setTemperature");
+    await expect(controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type: "forever" as never })).rejects.toThrow("Hold type must be");
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("allows 65 F cooling in fresh Cool mode while preserving the inactive 67 F heat setpoint", async () => {
+    const { backend, controller } = setup();
+    await backend.setTemperature(thermostatId, { heatF: 67, coolF: 72, hours: 2 });
+    await backend.setMode(thermostatId, "cool");
+    const write = vi.spyOn(backend, "setTemperature");
+    const result = await controller.setTemperature({ thermostat_id: thermostatId, cool: 65, unit: "F", hold_type: "indefinite" });
+    expect(write).toHaveBeenCalledExactlyOnceWith(thermostatId, { heatF: 67, coolF: 65, holdType: "indefinite" });
+    expect(result).toMatchObject({ verification: "observed", requested: { heatF: 67, coolF: 65, hold_type: "indefinite" }, thermostat: { mode: "cool", heatF: 67, coolF: 65 } });
+  });
+
+  it("still rejects a 65 F cooling setpoint against 67 F heat in Auto mode", async () => {
+    const { backend, controller } = setup();
+    await backend.setTemperature(thermostatId, { heatF: 67, coolF: 72, hours: 2 });
+    const before = await backend.listThermostats();
+    const write = vi.spyOn(backend, "setTemperature");
+    await expect(controller.setTemperature({ thermostat_id: thermostatId, cool: 65, unit: "F", hold_type: "indefinite" })).rejects.toThrow("In Auto mode");
+    expect(write).not.toHaveBeenCalled();
+    expect(await backend.listThermostats()).toEqual(before);
   });
 
   it.each([0, 25, 1.5, Number.NaN])("rejects invalid duration %s before sending a change", async hours => {

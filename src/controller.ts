@@ -1,4 +1,4 @@
-import { UserError, type HvacMode, type Thermostat, type ThermostatBackend, type Unit } from "./types.js";
+import { UserError, type HvacMode, type TemperatureHold, type Thermostat, type ThermostatBackend, type Unit } from "./types.js";
 
 export function fahrenheit(value: number, unit: Unit): number {
   if (!Number.isFinite(value)) throw new UserError("Temperature must be a finite number.");
@@ -29,21 +29,31 @@ export class Controller {
   list() { return this.serial(async () => ({ backend: this.backend.kind, simulated: this.backend.kind === "demo", thermostats: await this.backend.listThermostats() })); }
   status(id: string) { return this.serial(async () => ({ backend: this.backend.kind, simulated: this.backend.kind === "demo", thermostat: await this.thermostat(id) })); }
 
-  setTemperature(input: { thermostat_id: string; heat?: number; cool?: number; unit: Unit; hours: number }) {
+  setTemperature(input: { thermostat_id: string; heat?: number; cool?: number; unit: Unit; hold_type?: "hours" | "indefinite" | "next_transition"; hours?: number }) {
     return this.serial(async () => {
       const before = await this.thermostat(input.thermostat_id);
       this.writable(before);
       if (input.heat === undefined && input.cool === undefined) throw new UserError("Provide heat, cool, or both setpoints with an explicit unit.");
-      if (!Number.isInteger(input.hours) || input.hours < 1 || input.hours > 24) throw new UserError("Hold duration must be a whole number of hours from 1 to 24.");
+      const holdType = input.hold_type ?? "hours";
+      if (!["hours", "indefinite", "next_transition"].includes(holdType)) throw new UserError("Hold type must be hours, indefinite, or next_transition.");
+      if (holdType === "hours") {
+        if (input.hours === undefined || !Number.isInteger(input.hours) || input.hours < 1 || input.hours > 24) throw new UserError("Hold duration must be a whole number of hours from 1 to 24.");
+      } else if (input.hours !== undefined) {
+        throw new UserError("Hours must be omitted for indefinite and next_transition holds.");
+      }
       if (input.unit !== "F" && input.unit !== "C") throw new UserError("Unit must be F or C.");
       const heatF = input.heat === undefined ? before.heatF : fahrenheit(input.heat, input.unit);
       const coolF = input.cool === undefined ? before.coolF : fahrenheit(input.cool, input.unit);
       if (heatF < before.heatMinF || heatF > before.heatMaxF) throw new UserError(`Heat setpoint must be between ${before.heatMinF} and ${before.heatMaxF} F.`);
       if (coolF < before.coolMinF || coolF > before.coolMaxF) throw new UserError(`Cool setpoint must be between ${before.coolMinF} and ${before.coolMaxF} F.`);
-      if (coolF - heatF < before.minDeltaF) throw new UserError(`Cool must be at least ${before.minDeltaF} F above heat. Provide both setpoints if needed.`);
-      await this.backend.setTemperature(before.id, { heatF, coolF, hours: input.hours });
+      if (before.mode === "auto" && coolF - heatF < before.minDeltaF) throw new UserError(`In Auto mode, cool must be at least ${before.minDeltaF} F above heat. Provide both setpoints if needed.`);
+      const hold: TemperatureHold = holdType === "hours"
+        ? { heatF, coolF, holdType, hours: input.hours! }
+        : { heatF, coolF, holdType };
+      await this.backend.setTemperature(before.id, hold);
       const after = await this.thermostat(before.id);
-      return { simulated: this.backend.kind === "demo", thermostat_id: before.id, requested: { heatF, coolF, hours: input.hours }, delivery: "accepted", verification: Math.abs(after.heatF - heatF) < 0.11 && Math.abs(after.coolF - coolF) < 0.11 ? "observed" : "pending", thermostat: after };
+      const holdDescription = holdType === "hours" ? `for ${input.hours} ${input.hours === 1 ? "hour" : "hours"}` : holdType === "indefinite" ? "until changed" : "until the next scheduled change";
+      return { simulated: this.backend.kind === "demo", thermostat_id: before.id, requested: { heatF, coolF, hold_type: holdType, hold_description: holdDescription, ...(holdType === "hours" ? { hours: input.hours } : {}) }, delivery: "accepted", verification: Math.abs(after.heatF - heatF) < 0.11 && Math.abs(after.coolF - coolF) < 0.11 ? "observed" : "pending", thermostat: after };
     });
   }
 

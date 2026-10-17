@@ -2,7 +2,7 @@
 
 An open-source MCP server for controlling ecobee thermostats from ChatGPT. The Cloudflare deployment is designed to run entirely in the cloud: people connect their own ecobee account through a browser, without installing a local companion or obtaining an ecobee developer API key.
 
-**Experimental.** The Cloudflare deployment, GitHub sign-in, ecobee login, restoring an encrypted session, and a real thermostat read through ChatGPT have been verified. Live temperature and HVAC changes have not been tested. Ecobee can block cloud browsers, and portal changes can break this unofficial integration.
+**Experimental.** The Cloudflare deployment, GitHub sign-in, ecobee login, restoring and renewing an encrypted session, a thermostat read through ChatGPT, and a real indefinite cooling hold have been verified. HVAC mode changes have not been independently verified live. Ecobee can block cloud browsers, and portal changes can break this unofficial integration.
 
 The [operator's hosted pilot](https://openecobee-mcp.eliseo-492.workers.dev) is currently restricted to the operator's GitHub account. Other users can deploy their own instance using the guide below.
 
@@ -34,11 +34,11 @@ The deployment starts with a closed user allowlist. Verify login, account isolat
 | --- | --- |
 | `list_thermostats` | List accessible thermostats and their identifiers. |
 | `get_thermostat_status` | Read temperature, humidity, mode, connection state, and setpoints. |
-| `set_temperature` | Set a temporary heating/cooling hold; accepts Fahrenheit or Celsius. |
+| `set_temperature` | Set a heating/cooling hold with an explicit duration; accepts Fahrenheit or Celsius. |
 | `set_hvac_mode` | Select `off`, `heat`, `cool`, or `auto`. |
 | `resume_schedule` | End a hold and resume the thermostat's schedule. |
 
-Changes require writes to be enabled. Holds last 1–24 hours; setpoints must fit the thermostat's reported limits and minimum heat/cool separation. A response distinguishes accepted delivery from observed readback. Always check a pending result before retrying a change. Schedule resumption is reported as accepted without claiming physical verification.
+Changes require writes to be enabled. Holds can last 1–24 hours, until the next scheduled change, or until changed explicitly. Setpoints must fit the thermostat's reported limits; minimum heat/cool separation applies in Auto mode. A response distinguishes accepted delivery from observed readback. Always check a pending result before retrying a change. Schedule resumption is reported as accepted without claiming physical verification.
 
 Example prompts:
 

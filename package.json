@@ -1,6 +1,6 @@
 {
   "name": "openecobee-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A hosted MCP for ecobee using normal browser sign-in, without a developer API key.",
   "type": "module",
   "license": "MIT",

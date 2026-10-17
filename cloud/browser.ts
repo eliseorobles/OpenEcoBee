@@ -2,9 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { acquire, connect, endpointURLString, type Browser, type BrowserContext, type Page } from "@cloudflare/playwright";
 import { z } from "zod";
 import { Controller } from "../src/controller.js";
-import { PORTAL_URL, runPortalOperation, type PortalErrorCode, type PortalOperation } from "../src/portal.js";
+import { PORTAL_URL, portalDiagnosticSuffix, runPortalOperation, type PortalDiagnostics, type PortalErrorCode, type PortalOperation } from "../src/portal.js";
 import { UserError, type ThermostatBackend } from "../src/types.js";
 import { decryptSession, encryptSession, type EncryptedSession } from "./crypto.js";
+import { capturePortalDiagnostics } from "./diagnostics.js";
 
 export interface BrowserEnv {
   BROWSER: BrowserRun;
@@ -18,7 +19,11 @@ type LoginSession = { sessionId: string; expiresAt: number };
 const LOGIN_LIFETIME = 10 * 60_000;
 const LIVE_VIEW_LIFETIME = 5 * 60_000;
 const id = z.string().regex(/^[0-9]{1,32}$/);
-const hold = z.object({ heatF: z.number().finite(), coolF: z.number().finite(), hours: z.number().int().min(1).max(24) }).strict();
+const setpoints = { heatF: z.number().finite(), coolF: z.number().finite() };
+const hold = z.union([
+  z.object({ ...setpoints, holdType: z.literal("hours").optional(), hours: z.number().int().min(1).max(24) }).strict(),
+  z.object({ ...setpoints, holdType: z.enum(["indefinite", "next_transition"]) }).strict(),
+]);
 const mode = z.enum(["off", "heat", "cool", "auto"]);
 const rpcSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("list") }).strict(),
@@ -37,7 +42,8 @@ const temperatureSchema = targetSchema.extend({
   heat: z.number().finite().optional(),
   cool: z.number().finite().optional(),
   unit: z.enum(["F", "C"]),
-  hours: z.number().int().min(1).max(24),
+  hold_type: z.enum(["hours", "indefinite", "next_transition"]).optional(),
+  hours: z.number().int().min(1).max(24).optional(),
 });
 
 const PORTAL_ERRORS: Record<PortalErrorCode, string> = {
@@ -55,7 +61,7 @@ const PORTAL_ERRORS: Record<PortalErrorCode, string> = {
 };
 
 class PortalError extends Error {
-  constructor(readonly code: PortalErrorCode) { super(PORTAL_ERRORS[code]); }
+  constructor(readonly code: PortalErrorCode, readonly diagnostics?: PortalDiagnostics) { super(PORTAL_ERRORS[code] + portalDiagnosticSuffix(diagnostics)); }
 }
 
 function response(data: unknown, status = 200): Response {
@@ -297,9 +303,38 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
     }
     if (!result.ok) {
       if (result.error === "login_required") await this.ctx.storage.delete("saved");
-      throw new PortalError(result.error);
+      throw new PortalError(result.error, result.diagnostics);
     }
     return "thermostats" in result ? result.thermostats : null;
+  }
+
+  private async expiredPortalToken(page: Page): Promise<boolean> {
+    return page.evaluate(() => {
+      const expired = (value: unknown): boolean | undefined => {
+        if (typeof value !== "string" || value.length > 32_768) return undefined;
+        const parts = value.split(".");
+        if (parts.length !== 3 || !/^[A-Za-z0-9_-]+$/.test(parts[1])) return undefined;
+        try {
+          const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+          const claims: unknown = JSON.parse(atob(payload.padEnd(Math.ceil(payload.length / 4) * 4, "=")));
+          if (!claims || typeof claims !== "object") return undefined;
+          const expiry = (claims as Record<string, unknown>).exp;
+          if (typeof expiry !== "number" || !Number.isInteger(expiry) || expiry < 0 || expiry > 253_402_300_799) return undefined;
+          return expiry <= Math.floor(Date.now() / 1000);
+        } catch { return undefined; }
+      };
+      // This is an expiry hint only. No token or decoded claim leaves the page,
+      // and the value is never used to authorize a thermostat operation.
+      try {
+        const store = (window as Window & { ecobeeStore?: { getState(): { tokens?: { token?: unknown } } } }).ecobeeStore;
+        const result = expired(store?.getState()?.tokens?.token);
+        if (result !== undefined) return result;
+      } catch { /* Fall back to the portal's cookie if store state is unavailable. */ }
+      try {
+        const cookie = document.cookie.split(";").map(part => part.trim()).find(part => part.startsWith("_TOKEN="));
+        return cookie ? expired(decodeURIComponent(cookie.slice("_TOKEN=".length))) === true : false;
+      } catch { return false; }
+    });
   }
 
   private async withBackend<T>(operation: (backend: ThermostatBackend) => Promise<T>): Promise<T> {
@@ -309,12 +344,26 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
     const sessionId = await this.acquireSession(60_000);
     let browser: Browser | undefined;
     let writeDelivered = false;
+    let capture: ReturnType<typeof capturePortalDiagnostics> | undefined;
     try {
       browser = await connect(this.env.BROWSER, sessionId);
       const context = await browser.newContext({ storageState });
       const page = await context.newPage();
+      capture = capturePortalDiagnostics(page);
       await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await this.waitForPortalReady(page);
+      if (await this.expiredPortalToken(page)) {
+        // Use the user's existing SSO cookies in this same context once, before
+        // any requested action. A login/MFA prompt requires manual reconnection.
+        await page.goto("https://www.ecobee.com/en-us/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await this.openHomepageSignIn(page);
+        await this.waitForPortalReady(page);
+        if (await this.expiredPortalToken(page)) {
+          await this.ctx.storage.delete("saved");
+          throw new PortalError("login_required");
+        }
+        await this.saveState(context);
+      }
       const backend: ThermostatBackend = {
         kind: "browser",
         listThermostats: async () => {
@@ -332,9 +381,13 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
       return result;
     } catch (error) {
       // A failed reread or state save must not encourage a duplicate command.
-      if (writeDelivered) throw new PortalError("write_uncertain");
+      if (writeDelivered) throw new PortalError("write_uncertain", error instanceof PortalError ? error.diagnostics : undefined);
+      if (error instanceof PortalError && error.code === "request_failed" && error.diagnostics?.phase !== "write" && capture) {
+        try { error.message += ` ${await capture.summary()}`; } catch { /* Preserve the original bounded error. */ }
+      }
       throw error;
     } finally {
+      capture?.dispose();
       if (browser) await browser.close().catch(() => undefined);
       await this.closeSession(sessionId);
     }

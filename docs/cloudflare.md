@@ -2,7 +2,7 @@
 
 This is the fully hosted path: the operator runs the MCP service and browsers on Cloudflare, and users connect their own ecobee accounts. No local companion remains running for end users.
 
-**Experimental deployment.** The operator's Cloudflare instance has passed GitHub sign-in, ecobee login, restoring the encrypted browser session, and a real thermostat read through ChatGPT's installed custom MCP plugin. Independent deployments still need their own verification. Live temperature and HVAC changes remain untested. Ecobee may reject Cloudflare-hosted browsers; a successful build alone does not establish compatibility.
+**Experimental deployment.** The operator's Cloudflare instance has passed GitHub sign-in, ecobee login, restoring and renewing the encrypted browser session, a thermostat read through ChatGPT's installed custom MCP plugin, and a real indefinite cooling hold with matching readback. Independent deployments still need their own verification. HVAC mode changes remain independently unverified live. Ecobee may reject Cloudflare-hosted browsers; a successful build alone does not establish compatibility.
 
 ## Operator requirements
 
