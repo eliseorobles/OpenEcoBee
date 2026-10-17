@@ -6,6 +6,10 @@ import { PORTAL_URL, portalDiagnosticSuffix, runPortalOperation, type PortalDiag
 import { UserError, type ThermostatBackend } from "../src/types.js";
 import { decryptSession, encryptSession, type EncryptedSession } from "./crypto.js";
 import { capturePortalDiagnostics } from "./diagnostics.js";
+import { runFeatureOperation } from "../src/feature-portal.js";
+import { parseFeatureRequest, featureReadOnly } from "../src/features.js";
+import type { FeatureRequest } from "../src/feature-types.js";
+import { withDeadline } from "../src/deadline.js";
 
 export interface BrowserEnv {
   BROWSER: BrowserRun;
@@ -32,7 +36,7 @@ const rpcSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("resume"), id }).strict(),
 ]);
 const controlSchema = z.object({
-  method: z.enum(["list", "status", "setTemperature", "setMode", "resume"]),
+  method: z.enum(["list", "status", "setTemperature", "setMode", "resume", "feature"]),
   args: z.unknown(),
   tokenAllowsWrites: z.boolean(),
 }).strict();
@@ -294,7 +298,8 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
   private async portal(page: Page, operation: PortalOperation) {
     let result;
     try {
-      result = await page.evaluate(runPortalOperation, operation);
+      result = await withDeadline(page.evaluate(runPortalOperation, operation), 60_000,
+        () => new PortalError(operation.type === "list" ? "timeout" : "write_uncertain"));
     } catch (error) {
       // Losing the browser connection cannot prove whether a dispatched write
       // reached ecobee. Never advise the client to retry that write blindly.
@@ -374,6 +379,20 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
         setTemperature: async (id, hold) => { await this.portal(page, { type: "setTemperature", id, hold }); writeDelivered = true; },
         setMode: async (id, mode) => { await this.portal(page, { type: "setMode", id, mode }); writeDelivered = true; },
         resumeSchedule: async id => { await this.portal(page, { type: "resume", id }); writeDelivered = true; },
+        executeFeature: async request => {
+          const parsed = parseFeatureRequest(request);
+          const mutation = !featureReadOnly(parsed.name);
+          let result;
+          try { result = await withDeadline(page.evaluate(runFeatureOperation, parsed), 60_000,
+            () => new PortalError(mutation ? "write_uncertain" : "timeout")); }
+          catch (error) { throw error instanceof PortalError ? error : new PortalError(mutation ? "write_uncertain" : "request_failed"); }
+          if (!result.ok) {
+            if (result.error === "login_required") await this.ctx.storage.delete("saved");
+            throw new PortalError(result.error, result.diagnostics);
+          }
+          if (mutation && result.data !== null && typeof result.data === "object" && (result.data as { delivery?: unknown }).delivery === "accepted") writeDelivered = true;
+          return result.data;
+        },
         close: async () => undefined,
       };
       const result = await operation(backend);
@@ -413,6 +432,7 @@ export class ThermostatSession extends DurableObject<BrowserEnv> {
     const data = await this.withBackend(async backend => {
       const controller = new Controller(backend, allowWrites);
       switch (input.method) {
+        case "feature": return controller.feature(input.args as FeatureRequest);
         case "list": return controller.list();
         case "status": return controller.status(targetSchema.parse(input.args).thermostat_id);
         case "setTemperature": return controller.setTemperature(temperatureSchema.parse(input.args));

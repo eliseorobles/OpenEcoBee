@@ -34,7 +34,7 @@ export async function serveHttp(controller: Controller, port: number) {
     let body = "";
     for await (const chunk of req) {
       body += chunk.toString();
-      if (Buffer.byteLength(body) > 16384) { respond(res, 413, "Request too large."); return; }
+      if (Buffer.byteLength(body) > 65536) { respond(res, 413, "Request too large."); return; }
     }
     let parsed: unknown;
     try { parsed = JSON.parse(body); } catch { respond(res, 400, "Invalid JSON."); return; }

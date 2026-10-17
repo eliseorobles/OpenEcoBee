@@ -5,6 +5,7 @@ import type { IncomingMessage } from "node:http";
 import { Controller } from "../src/controller.js";
 import { DemoBackend } from "../src/demo.js";
 import { createMcpServer, localRequestAllowed } from "../src/server.js";
+import { featureDefinitions } from "../src/features.js";
 
 const thermostatId = "demo-downstairs";
 const cleanups: Array<() => Promise<void>> = [];
@@ -28,9 +29,9 @@ describe("MCP protocol", () => {
   it("advertises read/write annotations and explicit input requirements", async () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map(tool => tool.name).sort()).toEqual(["get_thermostat_status", "list_thermostats", "resume_schedule", "set_hvac_mode", "set_temperature"]);
+    expect(tools.map(tool => tool.name).sort()).toEqual(["get_thermostat_status", "list_thermostats", "resume_schedule", "set_hvac_mode", "set_temperature", "get_capabilities", ...featureDefinitions.map(feature => feature.name)].sort());
     for (const tool of tools) {
-      const readOnly = ["list_thermostats", "get_thermostat_status"].includes(tool.name);
+      const readOnly = ["list_thermostats", "get_thermostat_status", "get_capabilities"].includes(tool.name) || featureDefinitions.find(feature => feature.name === tool.name)?.readOnly === true;
       expect(tool.annotations).toMatchObject({ readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly });
       expect(tool.inputSchema.additionalProperties).toBe(false);
     }

@@ -1,3 +1,5 @@
+import type { FeatureRequest } from "./feature-types.js";
+
 export type HvacMode = "off" | "heat" | "cool" | "auto";
 export type Unit = "F" | "C";
 
@@ -32,6 +34,7 @@ export interface ThermostatBackend {
   setTemperature(id: string, hold: TemperatureHold): Promise<void>;
   setMode(id: string, mode: HvacMode): Promise<void>;
   resumeSchedule(id: string): Promise<void>;
+  executeFeature?(request: FeatureRequest): Promise<unknown>;
   close(): Promise<void>;
 }
 

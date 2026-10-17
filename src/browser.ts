@@ -3,6 +3,10 @@ import { existsSync } from "node:fs";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { PORTAL_URL, portalDiagnosticSuffix, runPortalOperation, type PortalErrorCode, type PortalOperation, type PortalResult } from "./portal.js";
 import { UserError, type HvacMode, type TemperatureHold, type Thermostat, type ThermostatBackend } from "./types.js";
+import type { FeatureRequest } from "./feature-types.js";
+import { runFeatureOperation } from "./feature-portal.js";
+import { featureReadOnly, parseFeatureRequest } from "./features.js";
+import { withDeadline } from "./deadline.js";
 
 const MESSAGES: Record<PortalErrorCode, string> = {
   login_required: "Your Ecobee sign-in is missing or expired. Run openecobee login, then try again.",
@@ -133,6 +137,27 @@ export class BrowserBackend implements ThermostatBackend {
 
   resumeSchedule(id: string): Promise<void> {
     return this.serialize(async () => { await this.perform({ type: "resume", id }); });
+  }
+
+  executeFeature(request: FeatureRequest): Promise<unknown> {
+    return this.serialize(async () => {
+      const parsed = parseFeatureRequest(request);
+      const mutation = !featureReadOnly(parsed.name);
+      const page = await this.getPage();
+      let result;
+      try {
+        result = await withDeadline(page.evaluate(runFeatureOperation, parsed), 60_000,
+          () => new UserError(mutation ? MESSAGES.write_uncertain : MESSAGES.timeout));
+      } catch (error) {
+        await this.closeContext();
+        throw error instanceof UserError ? error : new UserError(mutation ? MESSAGES.write_uncertain : MESSAGES.request_failed);
+      }
+      if (!result.ok) {
+        if (["timeout", "write_uncertain", "login_required"].includes(result.error)) await this.closeContext();
+        throw new UserError(MESSAGES[result.error] + portalDiagnosticSuffix(result.diagnostics));
+      }
+      return result.data;
+    });
   }
 
   private async closeContext(): Promise<void> {

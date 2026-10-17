@@ -30,6 +30,10 @@ The deployment starts with a closed user allowlist. Verify login, account isolat
 
 ## MCP tools
 
+The server provides tools covering thermostat state and holds, eco+ master control, energy/automation inspection, Smart Recovery, comfort settings, weekly schedules, fan, sensors, vacations, alerts, messages, runtime reports, and documented settings. Use `get_capabilities` for the current catalog. See [feature coverage](docs/feature-coverage.md) for the distinction between implemented interfaces, live verification, device-specific support, and unverified eco+ subfeatures.
+
+The original core tools remain available:
+
 | Tool | Purpose |
 | --- | --- |
 | `list_thermostats` | List accessible thermostats and their identifiers. |
@@ -45,6 +49,11 @@ Example prompts:
 - “List my thermostats and show the downstairs temperature.”
 - “Set the downstairs heating setpoint to 68°F and cooling setpoint to 76°F for two hours.”
 - “Resume the downstairs thermostat's schedule.”
+- “Show my eco+ state, Smart Recovery preferences, and active holds without changing anything.”
+- “Turn off the eco+ master setting.”
+- “Enable Smart Recovery for cooling.”
+
+An indefinite hold overrides the schedule, and Smart Recovery does not run during that hold. Individual eco+ switches and savings levels still require verified interfaces; the master control does not imply full eco+ feature coverage.
 
 ## Local development
 
@@ -65,7 +74,7 @@ npm run demo
 node dist/cli.js serve --demo --allow-writes
 ```
 
-The demo is a stdio MCP server and waits for a client. For a local real-account experiment, install Chromium and complete ecobee login on this computer:
+The demo is a stdio MCP server and waits for a client. It simulates the original five thermostat controls; the extended features require a real browser backend. For a local real-account experiment, install Chromium and complete ecobee login on this computer:
 
 ```sh
 npx playwright install chromium

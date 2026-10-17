@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PortalOperation } from "../src/portal.js";
+import type { FeatureRequest } from "../src/feature-types.js";
 import type { Thermostat } from "../src/types.js";
 
 const mockBrowser = vi.hoisted(() => ({ acquire: vi.fn(), connect: vi.fn(), endpointURLString: vi.fn() }));
@@ -46,18 +47,24 @@ function post(instance: ThermostatSession, path: string, body?: unknown) {
 describe("hosted thermostat tenant object", () => {
   let current: Thermostat;
   let operations: PortalOperation[];
+  let features: FeatureRequest[];
   beforeEach(() => {
     vi.clearAllMocks();
     current = { id: "123456789012", name: "Home", temperatureF: 72, humidity: 40, mode: "auto", heatF: 68, coolF: 76,
       connected: true, heatMinF: 45, heatMaxF: 79, coolMinF: 65, coolMaxF: 92, minDeltaF: 5, equipment: "" };
     operations = [];
+    features = [];
     mockBrowser.acquire.mockResolvedValue({ sessionId: "private-session" });
     const context = {
       newPage: async () => ({
         goto: async () => undefined,
         waitForFunction: async () => undefined,
-        evaluate: async (_fn: unknown, operation?: PortalOperation) => {
+        evaluate: async (_fn: unknown, operation?: PortalOperation | FeatureRequest) => {
           if (!operation) return false;
+          if ("name" in operation) {
+            features.push(operation);
+            return { ok: true, data: { delivery: "accepted", verification: "observed" } };
+          }
           operations.push(operation);
           if (operation.type === "list") return { ok: true, thermostats: [{ ...current }] };
           if (operation.type === "setTemperature") {
@@ -243,6 +250,25 @@ describe("hosted thermostat tenant object", () => {
     result = await post(instance, "/control", { method: "setMode", args: { thermostat_id: current.id, mode: "cool" }, tokenAllowsWrites: false });
     expect(result.status).toBe(400);
     expect(operations.every(operation => operation.type === "list")).toBe(true);
+  });
+
+  it.each([[false, true], [true, false], [true, true]] as const)("enforces both permissions for expanded controls (account %s, token %s)", async (accountWrites, tokenWrites) => {
+    const { instance } = await tenant("tenant-a");
+    await post(instance, "/preferences", { allowWrites: accountWrites });
+    const args = { name: "set_eco_plus", input: { thermostat_id: current.id, enabled: false } };
+    const result = await post(instance, "/control", { method: "feature", args, tokenAllowsWrites: tokenWrites });
+    expect(result.status).toBe(accountWrites && tokenWrites ? 200 : 400);
+    expect(features).toEqual(accountWrites && tokenWrites ? [args] : []);
+  });
+
+  it("allows expanded reads without write permission and rejects unowned targets", async () => {
+    const { instance } = await tenant("tenant-a");
+    const result = await post(instance, "/control", { method: "feature", args: { name: "get_energy_status", input: { thermostat_id: current.id } }, tokenAllowsWrites: false });
+    expect(result.status).toBe(200);
+    expect(features.map(feature => feature.name)).toEqual(["get_energy_status"]);
+    const missing = await post(instance, "/control", { method: "feature", args: { name: "get_energy_status", input: { thermostat_id: "999999999999" } }, tokenAllowsWrites: false });
+    expect(missing.status).toBe(400);
+    expect(features).toHaveLength(1);
   });
 
   it("serializes the full read-change-read cycle so simultaneous partial changes are preserved", async () => {

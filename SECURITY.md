@@ -20,6 +20,8 @@ Disconnecting from OpenEcoBee removes its saved session state. It does not neces
 
 Writes require both the account permission and the client's `thermostat:write` OAuth scope. Enabling them permits authenticated MCP callers with that scope to change thermostat settings; it does not add a per-command human approval screen. Clients should still honor their user-authorization controls.
 
+Write access covers the published thermostat catalog, including comfort profiles, schedules, eco+ master control, notifications, and documented equipment preferences. Advanced HVAC fields require an explicit request and an opt-in argument; that argument is input validation, not a separate authorization boundary. Destructive operations such as resetting preferences must be specifically requested by the user. Review the available tools before authorizing an untrusted client.
+
 Tool results include household information such as thermostat names, temperatures, humidity, equipment state, and settings. The service operator, Cloudflare infrastructure, and connected MCP clients/providers process relevant data under their own policies. Do not log credentials or full ecobee account responses.
 
 Store deployment secrets through Worker secret bindings. Keep local `.env`/`.dev.vars` files, `.openecobee`, raw network captures, and session fixtures out of Git, published artifacts, and issue attachments.

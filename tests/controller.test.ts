@@ -11,6 +11,24 @@ function setup(allowWrites = true) {
 }
 
 describe("Controller", () => {
+  it.each(["temperature", "mode", "resume"] as const)("does not invite a duplicate %s change when accepted-write readback fails", async operation => {
+    const { backend, controller } = setup();
+    const original = backend.listThermostats.bind(backend);
+    const list = vi.spyOn(backend, "listThermostats");
+    list.mockImplementationOnce(original).mockRejectedValue(new Error("No change was sent"));
+    const write = vi.spyOn(backend, operation === "temperature" ? "setTemperature" : operation === "mode" ? "setMode" : "resumeSchedule");
+    const result = operation === "temperature" ? controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type: "indefinite" })
+      : operation === "mode" ? controller.setMode(thermostatId, "cool") : controller.resume(thermostatId);
+    await expect(result).rejects.toThrow("Ecobee accepted the change, but its current state could not be read");
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it("distinguishes observed setpoints from unverified hold duration", async () => {
+    const { controller } = setup();
+    const result = await controller.setTemperature({ thermostat_id: thermostatId, cool: 77, unit: "F", hold_type: "indefinite" });
+    expect(result).toMatchObject({ verification: "observed", verification_scope: "setpoints_only", hold_verification: "not_verified" });
+  });
+
   it("blocks all writes by default without changing the backend", async () => {
     const { backend, controller } = setup(false);
     const before = await backend.listThermostats();

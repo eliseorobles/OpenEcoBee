@@ -26,7 +26,7 @@ Writes require both the account-page permission and a `thermostat:write` grant t
 
 ## Portal adapter
 
-The browser backend loads ecobee's web portal, locates its Angular application, and invokes the portal's existing `ecobeeAPI` service from inside the signed-in page. Credentials remain in the browser context rather than being copied into a separate ecobee API client. The adapter translates the small MCP operation set into portal calls.
+The browser backend loads ecobee's web portal, locates its Angular application, and invokes the portal's existing `connectionManagerAPI` service from inside the signed-in page. Credentials remain in the browser context rather than being copied into a separate ecobee API client. The adapter translates fixed MCP operations into source-verified portal calls. The extended catalog validates documented writable fields, preserves unrelated program and group data, and checks model support before dispatch.
 
 This depends on undocumented application internals. A portal release can change service discovery, response shapes, or command behavior. Ecobee may reject cloud or automated browsers before login. The adapter must fail clearly when its assumptions no longer hold and does not bypass login, MFA, or access restrictions.
 
@@ -43,7 +43,9 @@ MCP exposes fixed thermostat operations, with no browser scripting, arbitrary HT
 - Mode changes use a restricted enum.
 - `resume_schedule` sends a request to end a hold.
 
-The server reports accepted delivery separately from observed readback. A matching readback still does not establish physical HVAC behavior. Schedule resumption is explicitly unverified. Client-side authorization controls remain relevant even after the server owner or account user enables writes.
+The server reports accepted delivery separately from observed readback. A matching setpoint readback does not verify hold duration or physical HVAC behavior; `get_events` exposes the hold metadata. Schedule resumption is explicitly unverified. Browser transport deadlines also cover a renderer that stops running its own timers. A failed read after an accepted write reports uncertainty and never retries the change. Client-side authorization controls remain relevant even after the server owner or account user enables writes.
+
+The server's `get_capabilities` tool and [coverage document](feature-coverage.md) distinguish implemented operations from live verification and remaining gaps. Eco+ is separate from HVAC mode. Master eco+ control does not establish support for every individual energy feature, utility enrollment, or app-only workflow.
 
 ## Local development path
 

@@ -32,10 +32,24 @@ function redirect(location: string, headers?: HeadersInit) { const h = new Heade
 function csrfValid(request: Request, session: Identity, form: FormData, env: Env) { return request.headers.get("Origin") === env.PUBLIC_ORIGIN && form.get("csrf") === session.csrf; }
 function hidden(session: Identity) { return `<input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}">`; }
 
+function energyReport(value: unknown): string {
+  const object = (input: unknown): Record<string, unknown> => input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const data = object(value);
+  const energy = object(data.energy);
+  const program = object(data.program);
+  const state = data.energyFeatureState;
+  const running = Array.isArray(data.runningEvents) ? data.runningEvents.map(object) : [];
+  const climate = Array.isArray(program.climates) ? program.climates.map(object).find(item => item.climateRef === program.currentClimateRef) : undefined;
+  const display = (item: unknown) => typeof item === "number" && Number.isFinite(item) ? `${item} °F` : "Not reported";
+  const hold = running.find(item => item.type === "hold");
+  const holdText = !hold ? "No running manual hold reported" : hold.isIndefinite === true ? "Until changed" : "A hold is active; its duration is shown in the ecobee app";
+  return `<section><h2>${escapeHtml(typeof data.name === "string" ? data.name : "Ecobee")}</h2><p>Displayed temperature: <strong>${display(data.displayedTemperatureF)}</strong><br>Unadjusted thermostat temperature: ${display(data.dryBulbTemperatureF)}<br>Eco+ master state: <strong>${state === "enabled" ? "On" : state === "disabled" ? "Off" : "Not reported"}</strong><br>Humidity adjustment: ${energy.feelsLikeMode === "humidex" ? "Humidity-adjusted temperature is reported" : "Not established by the reported data"}<br>Manual hold: ${escapeHtml(holdText)}<br>Scheduled comfort setting: ${escapeHtml(typeof climate?.name === "string" ? climate.name : "Not reported")}</p><p>Running events: ${escapeHtml(running.map(item => typeof item.type === "string" ? item.type : "unknown").join(", ") || "None reported")}</p></section>`;
+}
+
 async function appPage(env: Env, session: Identity) {
   const response = await internal(env, session.userId, "/status");
   const state = await response.json() as { connected: boolean; allowWrites: boolean };
-  return page("Your ecobee connection", `<p>Signed in as <strong>${escapeHtml(session.login)}</strong>. Ecobee: <strong>${state.connected ? "connected" : "not connected"}</strong>.</p><p>Open the private hosted browser and sign in to ecobee, including MFA. Your login happens inside a Cloudflare browser. This service stores an encrypted browser session and can use it to access your thermostat.</p><p>The standard ecobee portal session also permits access to your profile and sign-in management. OpenEcoBee uses the session for thermostat controls.</p><form method="post" action="/app/start">${hidden(session)}<button>Open ecobee sign-in</button></form><form method="post" action="/app/finish">${hidden(session)}<button>Finish connecting ecobee</button></form><form method="post" action="/app/check">${hidden(session)}<button>Check connection</button></form><form method="post" action="/app/preferences">${hidden(session)}<label><input type="checkbox" name="allowWrites" value="yes" ${state.allowWrites ? "checked" : ""}> Allow temperature, HVAC mode, and schedule changes from authorized MCP clients</label><button>Save permissions</button></form><p>MCP URL: <code>${escapeHtml(env.PUBLIC_ORIGIN)}/mcp</code>. Add it to ChatGPT as a custom MCP server with OAuth.</p><form method="post" action="/app/disconnect">${hidden(session)}<button>Disconnect ecobee and delete saved session</button></form><form method="post" action="/app/logout">${hidden(session)}<button>Sign out of OpenEcoBee</button></form><p class="muted">Browser compatibility and real thermostat control are still under verification. If ecobee blocks hosted sign-in, the service cannot connect.</p>`);
+  return page("Your ecobee connection", `<p>Signed in as <strong>${escapeHtml(session.login)}</strong>. Ecobee: <strong>${state.connected ? "connected" : "not connected"}</strong>.</p><p>Open the private hosted browser and sign in to ecobee, including MFA. Your login happens inside a Cloudflare browser. This service stores an encrypted browser session and can use it to access your thermostat.</p><p>The standard ecobee portal session also permits access to your profile and sign-in management. OpenEcoBee uses the session for thermostat controls.</p><form method="post" action="/app/start">${hidden(session)}<button>Open ecobee sign-in</button></form><form method="post" action="/app/finish">${hidden(session)}<button>Finish connecting ecobee</button></form><form method="post" action="/app/check">${hidden(session)}<button>Check connection</button></form><form method="post" action="/app/energy">${hidden(session)}<button>Check energy and automation</button></form><form method="post" action="/app/preferences">${hidden(session)}<label><input type="checkbox" name="allowWrites" value="yes" ${state.allowWrites ? "checked" : ""}> Allow thermostat changes from authorized MCP clients</label><p>Includes temperature and fan holds, HVAC mode, schedules, comfort settings, eco+ master control, vacations, alerts, sensors, groups, audio, timezone, and supported thermostat settings. Advanced HVAC changes and preference resets require an explicit request.</p><button>Save permissions</button></form><p>MCP URL: <code>${escapeHtml(env.PUBLIC_ORIGIN)}/mcp</code>. Add it to ChatGPT as a custom MCP server with OAuth.</p><form method="post" action="/app/disconnect">${hidden(session)}<button>Disconnect ecobee and delete saved session</button></form><form method="post" action="/app/logout">${hidden(session)}<button>Sign out of OpenEcoBee</button></form><p class="muted">Browser compatibility and real thermostat control are still under verification. If ecobee blocks hosted sign-in, the service cannot connect.</p>`);
 }
 
 async function defaultFetch(request: Request, env: Env): Promise<Response> {
@@ -52,7 +66,7 @@ async function defaultFetch(request: Request, env: Env): Promise<Response> {
     const authRequest = await env.OAUTH_PROVIDER.parseAuthRequest(request);
     const details = await env.OAUTH_PROVIDER.describeConsent(authRequest);
     const consent = await env.OAUTH_PROVIDER.beginConsent(authRequest);
-    return page("Authorize thermostat access", `<p>Allow <strong>${escapeHtml(details.clientName)}</strong> to access your thermostat?</p><p>${details.clientDomain ? `Published by ${escapeHtml(details.clientDomain)}.` : "The client supplied its own name; it is not verified."} Access returns to <strong>${escapeHtml(details.redirectHost)}</strong>.</p>${details.redirectIsLoopback ? "<p>This returns access to an app on your computer. Continue only if you started this connection.</p>" : ""}<form method="post" action="/authorize"><input type="hidden" name="handle" value="${escapeHtml(consent.handle)}"><input type="hidden" name="scope" value="thermostat:read"><label><input type="checkbox" checked disabled> Read thermostat status (required)</label><label><input type="checkbox" name="scope" value="thermostat:write" ${details.scope.includes("thermostat:write") ? "checked" : ""}> Allow thermostat changes (optional)</label><label><input type="checkbox" name="scope" value="offline_access" checked> Keep this client connected (optional)</label><p>Read access shows temperatures and thermostat status. Write access allows temperature holds, HVAC changes, and resuming the schedule, when enabled in your connection settings.</p><button name="decision" value="approve">Allow and continue with GitHub</button> <button name="decision" value="deny">Deny</button></form>`, consent.headers);
+    return page("Authorize thermostat access", `<p>Allow <strong>${escapeHtml(details.clientName)}</strong> to access your thermostat?</p><p>${details.clientDomain ? `Published by ${escapeHtml(details.clientDomain)}.` : "The client supplied its own name; it is not verified."} Access returns to <strong>${escapeHtml(details.redirectHost)}</strong>.</p>${details.redirectIsLoopback ? "<p>This returns access to an app on your computer. Continue only if you started this connection.</p>" : ""}<form method="post" action="/authorize"><input type="hidden" name="handle" value="${escapeHtml(consent.handle)}"><input type="hidden" name="scope" value="thermostat:read"><label><input type="checkbox" checked disabled> Read thermostat status (required)</label><label><input type="checkbox" name="scope" value="thermostat:write" ${details.scope.includes("thermostat:write") ? "checked" : ""}> Allow thermostat changes (optional)</label><label><input type="checkbox" name="scope" value="offline_access" checked> Keep this client connected (optional)</label><p>Read access includes thermostat status, energy and automation, schedules, sensors, alerts, and supported reports. Write access allows the supported thermostat controls, including comfort settings, schedules, eco+ master control, vacations, fan, alerts, groups, audio, timezone, and advanced settings or preference resets when explicitly requested and enabled in your connection settings.</p><button name="decision" value="approve">Allow and continue with GitHub</button> <button name="decision" value="deny">Deny</button></form>`, consent.headers);
   }
   if (path === "/authorize" && request.method === "POST") {
     if (request.headers.get("Origin") !== env.PUBLIC_ORIGIN) return new Response("Invalid origin.", { status: 403 });
@@ -101,6 +115,18 @@ async function defaultFetch(request: Request, env: Env): Promise<Response> {
     const form = await request.formData();
     if (!csrfValid(request, session, form, env)) return new Response("Invalid form session.", { status: 403 });
     if (path === "/app/logout") return redirect("/", { "Set-Cookie": cookie(SESSION_COOKIE, "", 0) });
+    if (path === "/app/energy") {
+      const listed = await internal(env, session.userId, "/control", { method: "list", args: {}, tokenAllowsWrites: false });
+      const payload = await listed.json() as { ok?: boolean; data?: { thermostats?: Array<{ id: string }> } };
+      if (!listed.ok || !payload.ok || !Array.isArray(payload.data?.thermostats)) return page("Connection needs attention", "<p>Reconnect ecobee to read its energy and automation settings.</p><a href='/app'>Return to connection</a>");
+      const reports: string[] = [];
+      for (const thermostat of payload.data.thermostats.slice(0, 10)) {
+        const response = await internal(env, session.userId, "/control", { method: "feature", args: { name: "get_energy_status", input: { thermostat_id: thermostat.id } }, tokenAllowsWrites: false });
+        const result = await response.json() as { ok?: boolean; data?: { data?: unknown } };
+        reports.push(response.ok && result.ok ? energyReport(result.data?.data) : "<p>Energy data could not be read for this thermostat.</p>");
+      }
+      return page("Energy and automation", `${reports.join("")}<p>These are observations only. Nothing was changed. Individual eco+ feature controls depend on what this interface exposes.</p><a href='/app'>Return to connection</a>`);
+    }
     if (path === "/app/check") {
       const unavailable = () => page("Connection needs attention", "<p>Your ecobee session may have expired or could not be restored. Reconnect ecobee from your connection page, then check again.</p><a href='/app'>Return to connection</a>");
       try {
@@ -140,9 +166,9 @@ async function mcpFetch(request: Request, env: Env, ctx: ExecutionContext & { pr
     if (!response.ok || !result.ok) throw new UserError(result.message ?? "Ecobee is not connected. Open the hosted OpenEcoBee connection page to sign in.");
     return result.data;
   };
-  const controls: ThermostatControls = { list: () => call("list", {}), status: id => call("status", { thermostat_id: id }), setTemperature: input => call("setTemperature", input), setMode: (id, mode) => call("setMode", { thermostat_id: id, mode }), resume: id => call("resume", { thermostat_id: id }) };
+  const controls: ThermostatControls = { list: () => call("list", {}), status: id => call("status", { thermostat_id: id }), setTemperature: input => call("setTemperature", input), setMode: (id, mode) => call("setMode", { thermostat_id: id, mode }), resume: id => call("resume", { thermostat_id: id }), feature: request => call("feature", request) };
   const server = createMcpServer(controls);
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true, maxRequestBodySize: 16384 });
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true, maxRequestBodySize: 65536 });
   await server.connect(transport);
   const response = await transport.handleRequest(request);
   ctx.waitUntil(server.close());
